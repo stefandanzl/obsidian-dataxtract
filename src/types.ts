@@ -7,6 +7,8 @@
  * so the same data can be consumed the way that best fits the caller.
  */
 
+import type { Pos } from "obsidian";
+
 /** A single raw cell is just a string. */
 export type TableCell = string;
 
@@ -15,12 +17,12 @@ export type TableRow = TableCell[];
 
 /**
  * A heading associated with a table — the nearest preceding heading in the
- * document, plus its level (1–6) and 1-based line number.
+ * document, plus its level (1–6) and position (0-based, metadata-cache style).
  */
 export interface AssociatedHeader {
 	title: string;
 	level: number;
-	lineNumber: number;
+	position: Pos;
 }
 
 /**
@@ -59,12 +61,13 @@ export interface ParsedTable {
 	headers: string[];
 	/** Smart rows — plain arrays, each also exposing a `.get(column)` helper. */
 	rows: SmartRow[];
-	columnCount: number;
-	rowCount: number;
-	/** 1-based line number of the header row. */
-	lineStart: number;
-	/** 1-based line number of the last line belonging to the table. */
-	lineEnd: number;
+	/** Number of columns (header cells) and rows (body rows). */
+	count: { columns: number; rows: number };
+	/**
+	 * Position of the table, metadata-cache style (all 0-based): from the
+	 * first `|` of the header row to the last `|` of the table (inclusive).
+	 */
+	position: Pos;
 	/** Nearest preceding heading, or `null` if there is none. */
 	associatedHeader: AssociatedHeader | null;
 	/**

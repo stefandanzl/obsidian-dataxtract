@@ -1,3 +1,4 @@
+import type { Pos } from "obsidian";
 import {
 	ESCAPED_PIPE_PLACEHOLDER,
 	FENCE_REGEX,
@@ -16,10 +17,11 @@ import type {
 export interface RawTable {
 	headers: string[];
 	rows: string[][];
-	/** 1-based line number of the header row. */
-	lineStart: number;
-	/** 1-based line number of the last table line. */
-	lineEnd: number;
+	/**
+	 * Position of the table (0-based, metadata-cache style): from the first
+	 * `|` of the header row to the last `|` of the table (inclusive).
+	 */
+	position: Pos;
 	associatedHeader: AssociatedHeader | null;
 	headingPath: AssociatedHeader[];
 }
@@ -53,11 +55,28 @@ export function isSeparatorRow(line: string): boolean {
 	return cells.every((c) => SEPARATOR_CELL_REGEX.test(c));
 }
 
-/** Parses a heading line into an {@link AssociatedHeader}, or `null`. */
-export function parseHeading(line: string, lineNumber: number): AssociatedHeader | null {
+/**
+ * Parses a heading line into an {@link AssociatedHeader}, or `null`.
+ * @param lineIndex 0-based index of the heading line.
+ * @param lineOffset character offset of the line start within the document.
+ */
+export function parseHeading(
+	line: string,
+	lineIndex: number,
+	lineOffset: number,
+): AssociatedHeader | null {
 	const match = HEADING_REGEX.exec(line);
 	if (!match) return null;
-	return { title: match[2].trim(), level: match[1].length, lineNumber };
+	const startCol = line.indexOf("#");
+	const endCol = line.trimEnd().length;
+	return {
+		title: match[2].trim(),
+		level: match[1].length,
+		position: {
+			start: { line: lineIndex, col: startCol, offset: lineOffset + startCol },
+			end: { line: lineIndex, col: endCol, offset: lineOffset + endCol },
+		},
+	};
 }
 
 /**
@@ -69,14 +88,23 @@ export function parseHeading(line: string, lineNumber: number): AssociatedHeader
  * ignored, so tables inside ```` ``` ```` blocks are not extracted.
  */
 export function extractTables(content: string): RawTable[] {
-	const lines = content.split(/\r?\n/);
+	// Split on "\n" only, so each line keeps a uniform +1 separator length and
+	// character offsets stay correct for files with "\r\n" line endings (all
+	// downstream checks trim, so a trailing "\r" is harmless).
+	const lines = content.split("\n");
+	const lineStarts: number[] = [];
+	let docOffset = 0;
+	for (const line of lines) {
+		lineStarts.push(docOffset);
+		docOffset += line.length + 1;
+	}
+
 	const tables: RawTable[] = [];
 	const headingStack: AssociatedHeader[] = [];
 	let inFence = false;
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		const lineNumber = i + 1;
 
 		// Toggle / skip fenced code blocks.
 		if (FENCE_REGEX.test(line)) {
@@ -87,7 +115,7 @@ export function extractTables(content: string): RawTable[] {
 
 		// Track heading hierarchy: pop same-or-deeper levels, then push.
 		if (/^#{1,6}\s/.test(line)) {
-			const heading = parseHeading(line, lineNumber);
+			const heading = parseHeading(line, i, lineStarts[i]);
 			if (heading) {
 				while (
 					headingStack.length > 0 &&
@@ -117,11 +145,23 @@ export function extractTables(content: string): RawTable[] {
 				j++;
 			}
 
+			// Position: first `|` of the header row to the last `|` of the
+			// table (inclusive), 0-based, as character offsets in the document.
+			const lastLine = j - 1;
+			const startCol = line.indexOf("|");
+			const endCol = lines[lastLine].lastIndexOf("|");
+
 			tables.push({
 				headers,
 				rows,
-				lineStart: lineNumber,
-				lineEnd: j,
+				position: {
+					start: { line: i, col: startCol, offset: lineStarts[i] + startCol },
+					end: {
+						line: lastLine,
+						col: endCol,
+						offset: lineStarts[lastLine] + endCol,
+					},
+				},
 				associatedHeader:
 					headingStack.length > 0
 						? headingStack[headingStack.length - 1]
@@ -187,10 +227,8 @@ export function buildParsedTable(
 	return {
 		headers,
 		rows: smartRows,
-		columnCount: headers.length,
-		rowCount: smartRows.length,
-		lineStart: raw.lineStart,
-		lineEnd: raw.lineEnd,
+		count: { columns: headers.length, rows: smartRows.length },
+		position: raw.position,
 		associatedHeader: raw.associatedHeader,
 		headingPath: raw.headingPath,
 		getValue: (column, rowIndex) => {
